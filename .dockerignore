@@ -1,0 +1,13 @@
+.venv/
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+.env
+*.tfstate
+*.tfstate.backup
+.terraform/
+htmlcov/
+.coverage
+docs/
+*.png
