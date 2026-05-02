@@ -1,0 +1,15 @@
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["simulator/tests", "pipeline/tests", "api/tests"]
+addopts = "--cov=simulator --cov=pipeline --cov=api --cov-report=term-missing"
+
+[tool.coverage.run]
+omit = ["*/tests/*", "*/__init__.py"]
