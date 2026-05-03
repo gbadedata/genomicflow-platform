@@ -131,12 +131,12 @@ Three BigQuery tables with day partitioning and clustering for query efficiency:
 | run_timestamp | TIMESTAMP | When the run was performed (partition key) |
 | ingested_at | TIMESTAMP | When record was ingested |
 
-### `variants` — Genomic variant calls per run
+### `variants` - Genomic variant calls per run
 
 Partitioned by `detected_at`. Fields: chromosome, position, reference/alternate alleles, variant type,
 quality score, clinical significance (PATHOGENIC through BENIGN).
 
-### `quality_metrics` — 7 QC metrics per run
+### `quality_metrics` - 7 QC metrics per run
 
 Partitioned by `measured_at`. Tracks: mean_base_quality, coverage_depth, Q30_percentage, duplicate_rate,
 mapping_rate, GC_content, insert_size_median — each with threshold and pass/fail flag.
