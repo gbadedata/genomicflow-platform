@@ -111,7 +111,7 @@ Infrastructure: Terraform  ·  CI/CD: GitHub Actions  ·  Containers: Docker
 
 Three BigQuery tables with day partitioning and clustering for query efficiency:
 
-### `sequencing_runs` — Primary fact table
+### `sequencing_runs` - Primary fact table
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -284,7 +284,7 @@ cp .env.example .env
 # Edit .env with your GCP project ID
 ```
 
-### Run the simulator (dry run — no GCP calls)
+### Run the simulator (dry run - no GCP calls)
 
 ```bash
 python -c "
