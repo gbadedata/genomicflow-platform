@@ -1,0 +1,76 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    name: Lint & Test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Lint with flake8
+        run: |
+          flake8 simulator/ pipeline/ api/ \
+            --max-line-length=105 \
+            --extend-ignore=E203,W503,W292,F401,E221,E712 \
+            --exclude=__pycache__
+
+      - name: Run unit tests
+        env:
+          GCP_PROJECT_ID: genomicflow-platform
+          GCP_REGION: europe-west2
+          PUBSUB_TOPIC_ID: genomic-events
+          PUBSUB_SUBSCRIPTION_ID: genomic-events-sub
+          BQ_DATASET: genomicflow
+          BQ_TABLE_RUNS: sequencing_runs
+          BQ_TABLE_VARIANTS: variants
+          BQ_TABLE_QUALITY: quality_metrics
+          GCS_RAW_BUCKET: genomicflow-platform-raw
+          GCS_PROCESSED_BUCKET: genomicflow-platform-processed
+          ENVIRONMENT: test
+        run: |
+          pytest simulator/tests/ pipeline/tests/ \
+            --cov=simulator --cov=pipeline \
+            --cov-report=term-missing \
+            --cov-fail-under=25 \
+            -v
+
+  docker-build:
+    runs-on: ubuntu-latest
+    name: Docker Build
+    needs: lint-and-test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -t genomicflow-api:${{ github.sha }} .
+
+      - name: Verify image starts
+        run: |
+          docker run --rm \
+            -e GCP_PROJECT_ID=genomicflow-platform \
+            -e ENVIRONMENT=test \
+            genomicflow-api:${{ github.sha }} \
+            python -c "from api.main import app; print('Import OK')"
