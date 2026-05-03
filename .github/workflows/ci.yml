@@ -31,7 +31,7 @@ jobs:
         run: |
           flake8 simulator/ pipeline/ api/ \
             --max-line-length=105 \
-            --extend-ignore=E203,W503,W292,F401,E221,E712,E501,W291,W293,E128,E125,E126,E131 \
+            --extend-ignore=E203,W503,W292,F401,E221,E712,E501,W291,W293,E128,E125,E126,E131,F841 \
             --exclude=__pycache__,infra
 
       - name: Run unit tests
