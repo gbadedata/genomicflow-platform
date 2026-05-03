@@ -340,14 +340,6 @@ terraform apply
 - Cloud Monitoring alert policy for high failure rates
 - Artifact Registry repository for Docker images
 
-**Estimated cost:** ~5 GBP/month (Cloud Run scales to zero, BigQuery charges per query only)
-
-**To destroy all resources:**
-
-```bash
-terraform destroy
-```
-
 Full infrastructure recreatable in under 5 minutes.
 
 ---
