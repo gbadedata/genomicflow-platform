@@ -104,7 +104,7 @@ Infrastructure: Terraform  ·  CI/CD: GitHub Actions  ·  Containers: Docker
 | **CI/CD** | GitHub Actions (lint + test + Docker build) |
 | **Visualisation** | Looker Studio (live BigQuery connection) |
 | **IAM** | GCP Service Accounts with least-privilege roles |
-| **Testing** | pytest · 51 passing tests · Terraform validated in CI |
+| **Testing** | pytest · 53 passing tests · Terraform validated in CI |
 | **Logging** | structlog (structured JSON logs with correlation IDs) |
 
 ---
@@ -254,7 +254,7 @@ genomicflow-platform/
 |   |   +-- pipeline.py           # Pub/Sub consumer: process, reject or retry
 |   +-- tests/
 |       +-- test_validator.py     # 14 unit tests
-|       +-- test_pipeline.py      # 20 unit tests: outcome, ack and nack per message
+|       +-- test_pipeline.py      # 22 unit tests: outcomes, ack/nack, listen mode
 |       +-- test_bq_writer.py     # 6 unit tests: insert IDs and write results
 |
 +-- api/                          # FastAPI Cloud Run service
@@ -339,11 +339,25 @@ run_simulator(dry_run=False, max_runs=20, interval_seconds=1.0)
 ### Run the streaming pipeline
 
 ```bash
+# Listen mode: keep pulling for 10 minutes, even while the subscription is empty
+python -c "
+from pipeline.src.pipeline import run_pipeline
+run_pipeline(run_seconds=600)
+"
+
+# Drain mode: stop at the first empty pull
 python -c "
 from pipeline.src.pipeline import run_pipeline
 run_pipeline(max_messages=20)
 "
 ```
+
+Use listen mode when dead-lettering matters. Google notes that the delivery count
+"may also reset to zero, especially for a pull subscription with inactive subscribers"
+([docs](https://cloud.google.com/pubsub/docs/dead-letter-topics)). A pipeline that keeps
+stopping and starting may therefore retry a bad message indefinitely instead of moving it
+to the dead-letter topic. This was seen on GCP on 17 November 2026: run in short bursts,
+the unstorable test message was retried 16 times and never dead-lettered.
 
 ### Start the API locally
 
@@ -423,8 +437,8 @@ pytest simulator/tests/ pipeline/tests/ \
 | simulator/src/models.py | 100% |
 | pipeline/src/bq_writer.py | 100% |
 | pipeline/src/validator.py | 88% |
-| pipeline/src/pipeline.py | 91% |
-| **Total** | **51 passing tests** |
+| pipeline/src/pipeline.py | 92% |
+| **Total** | **53 passing tests** |
 
 The pipeline tests check that every message ends processed, rejected or retried, that only a
 stored outcome is acknowledged, and that insert IDs stay the same when a message is redelivered.
@@ -479,6 +493,7 @@ A review of the code against this README found that four things it claimed were 
 | Nothing is silently dropped | A message was acknowledged even when its BigQuery write failed, so that data was lost | Acknowledge only after the outcome is stored; otherwise nack and let Pub/Sub retry |
 | An alert on high failure rate | The alert measured undelivered backlog and had no notification channel | Two accurately named alerts (backlog, dead-lettered) and an optional email channel |
 | (not claimed, found while redeploying) | The main subscription expired after 7 days without activity, so by November it had been deleted and any message published would have been lost | The subscription never expires |
+| (found while verifying on GCP) | The pipeline stopped at the first empty pull, and with no subscriber listening Pub/Sub kept resetting the delivery count, so a failing message was retried 16 times and never dead-lettered | Listen mode (`run_seconds`), and `verify_gcp.sh` now listens for the whole check |
 
 Also fixed: `generate_run(force_quarantine=True)` returned a FAILED run 5% of the time, which made
 one test fail at random. Added stable BigQuery insert IDs, 27 tests, `terraform validate` in CI,

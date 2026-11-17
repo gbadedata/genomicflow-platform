@@ -206,3 +206,44 @@ class TestRunPipelineLoop:
     def test_stops_when_no_messages(self, monkeypatch):
         summary, sub = self._run(monkeypatch, [], FakeWriter())
         assert summary["total"] == 0 and sub.acked == [] and sub.nacked == []
+
+
+class TestListenMode:
+    """run_seconds > 0 keeps pulling through empty pulls until the time is up."""
+
+    def test_keeps_listening_through_empty_pulls_and_timeouts(self, monkeypatch):
+        import pipeline.src.pipeline as pl
+
+        clock = iter(range(1000))
+        monkeypatch.setattr(pl.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(pl.time, "sleep", lambda s: None)
+
+        class Sub(FakeSubscriber):
+            def __init__(self):
+                super().__init__([])
+                self.responses = [
+                    [],                                        # empty pull
+                    pl.gexc.DeadlineExceeded("no messages"),   # pull timed out
+                    [received(good_record())],                 # message arrives later
+                ]
+
+            def pull(self, request, timeout):
+                item = self.responses.pop(0) if self.responses else []
+                if isinstance(item, Exception):
+                    raise item
+                return SimpleNamespace(received_messages=item)
+
+        sub = Sub()
+        monkeypatch.setattr(pl.pubsub_v1, "SubscriberClient", lambda: sub)
+        monkeypatch.setattr(pl, "BigQueryWriter", lambda: FakeWriter())
+        summary = pl.run_pipeline(run_seconds=10)
+        assert summary["processed"] == 1
+        assert sub.acked == ["ack-1"]
+
+    def test_drain_mode_still_stops_at_first_empty_pull(self, monkeypatch):
+        import pipeline.src.pipeline as pl
+        sub = FakeSubscriber([])
+        sub.batches = [[], [received(good_record())]]
+        monkeypatch.setattr(pl.pubsub_v1, "SubscriberClient", lambda: sub)
+        monkeypatch.setattr(pl, "BigQueryWriter", lambda: FakeWriter())
+        assert pl.run_pipeline()["total"] == 0

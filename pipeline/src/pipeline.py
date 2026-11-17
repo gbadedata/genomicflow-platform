@@ -13,12 +13,25 @@ Every message ends in exactly one of three places:
 
 A message is only acked once its outcome is stored, so a failed write can no
 longer lose data.
+
+Run modes:
+
+* run_pipeline()                  drain: stop at the first empty pull (batch use).
+* run_pipeline(run_seconds=600)   listen: keep pulling for 10 minutes even when
+                                  the subscription is empty.
+
+Use listen mode when dead-lettering matters. Pub/Sub's delivery count can reset
+to zero for a pull subscription with no active subscriber, so a pipeline that
+stops between messages may keep retrying a bad message instead of moving it to
+the dead-letter topic.
 """
 import json
 import signal
+import time
 from enum import Enum
 
 import structlog
+from google.api_core import exceptions as gexc
 from google.cloud import pubsub_v1
 
 from pipeline.src.bq_writer import BigQueryWriter
@@ -112,9 +125,11 @@ def handle_message(received, writer: BigQueryWriter, dry_run: bool = False) -> O
     return Outcome.PROCESSED
 
 
-def run_pipeline(max_messages: int = 0, dry_run: bool = False) -> dict:
+def run_pipeline(max_messages: int = 0, dry_run: bool = False, run_seconds: float = 0) -> dict:
     global _running
     _running = True
+    listen   = run_seconds > 0
+    deadline = time.monotonic() + run_seconds if listen else None
 
     signal.signal(signal.SIGINT,  _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -126,23 +141,34 @@ def run_pipeline(max_messages: int = 0, dry_run: bool = False) -> dict:
     counts = {outcome: 0 for outcome in Outcome}
     total  = 0
 
-    logger.info("pipeline_started", subscription=sub_path, max_messages=max_messages)
+    logger.info(
+        "pipeline_started", subscription=sub_path, max_messages=max_messages,
+        run_seconds=run_seconds,
+    )
 
     while _running:
+        if listen and time.monotonic() >= deadline:
+            break
         try:
             response = subscriber.pull(
                 request={"subscription": sub_path, "max_messages": 10},
                 timeout=10,
             )
+            batch = response.received_messages
+        except gexc.DeadlineExceeded:
+            batch = []  # nothing arrived within the pull timeout
         except Exception as exc:
             logger.error("pipeline_error", error=str(exc))
             break
 
-        if not response.received_messages:
+        if not batch:
+            if listen:
+                time.sleep(1)
+                continue
             logger.info("no_messages_waiting", total_so_far=total)
             break
 
-        for received in response.received_messages:
+        for received in batch:
             outcome = handle_message(received, writer, dry_run=dry_run)
             counts[outcome] += 1
             total += 1

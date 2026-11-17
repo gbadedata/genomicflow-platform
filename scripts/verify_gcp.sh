@@ -12,6 +12,14 @@
 #   1 run BigQuery cannot store (total_bases = "lots")
 #                              -> retried, then genomic-events-dead-letter-sub
 #
+# The pipeline runs in listen mode for the whole check. Pub/Sub's delivery
+# count can reset when nothing is listening, so a pipeline started and stopped
+# in short bursts may never reach the dead-letter limit.
+#
+# Before publishing, the script clears anything already waiting on the main
+# subscription (gcloud pubsub subscriptions seek ... --time=now), so leftovers
+# from earlier runs do not mix with this one. Use it on a test project.
+#
 # Costs a few pence at most. Output is also saved to docs/evidence/.
 set -euo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -36,6 +44,11 @@ echo "GenomicFlow GCP verification"
 echo "project=$PROJECT_ID tag=$TAG start=$START"
 echo
 
+echo "== 0. Clearing messages left on genomic-events-sub by earlier runs"
+gcloud pubsub subscriptions seek genomic-events-sub --project "$PROJECT_ID" --time="$START" >/dev/null
+echo "  done"
+echo
+
 echo "== 1. Publishing test messages"
 "$PY" -c "from simulator.src.runner import run_simulator; run_simulator(dry_run=False, max_runs=5, interval_seconds=0.2)" >/dev/null
 echo "  5 simulator runs published"
@@ -53,23 +66,50 @@ gcloud pubsub topics publish "$TOPIC" --project "$PROJECT_ID" \
 echo "  1 unstorable run published (RUN-$TAG)"
 echo
 
-echo "== 2. Running the pipeline until the unstorable run is dead-lettered"
-echo "  Pub/Sub backs off 10s, 20s, 40s... between deliveries, so this takes a few minutes."
-FOUND=no
-for round in $(seq 1 16); do
-  SUMMARY="$("$PY" -c "
-import json, structlog, logging
-structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING))
+echo "== 2. Listening until the unstorable run is dead-lettered (up to 10 minutes)"
+echo "  Pub/Sub waits 10s, 20s, 40s... between deliveries, then moves the message after 5 attempts."
+LOG="$(mktemp)"
+"$PY" -c "
+import json, logging, structlog
+structlog.configure(
+    processors=[structlog.processors.add_log_level, structlog.processors.JSONRenderer()],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
+)
 from pipeline.src.pipeline import run_pipeline
-print(json.dumps(run_pipeline(max_messages=100)))" 2>/dev/null | tail -1)"
-  echo "  round $round: $SUMMARY"
+print(json.dumps({'summary': run_pipeline(run_seconds=600)}))" >"$LOG" 2>&1 &
+PIPELINE_PID=$!
+
+FOUND=no
+for check in $(seq 1 40); do
+  sleep 15
+  # Attributes are plain text in the JSON (only the data is base64), so the tag is greppable.
   if gcloud pubsub subscriptions pull "$DLQ_SUB" --project "$PROJECT_ID" --limit=10 \
-       --format='value(message.attributes.verify_tag)' 2>/dev/null | grep -q "^$TAG$"; then
+       --format=json 2>/dev/null | grep -q "$TAG"; then
     FOUND=yes
-    break
   fi
-  sleep 30
+  echo "  $((check * 15))s: dead-lettered=$FOUND"
+  [ "$FOUND" = yes ] && break
+  kill -0 "$PIPELINE_PID" 2>/dev/null || break
 done
+kill -TERM "$PIPELINE_PID" 2>/dev/null || true
+wait "$PIPELINE_PID" 2>/dev/null || true
+
+"$PY" - "$LOG" "RUN-$TAG" <<'PYEOF'
+import json, sys
+attempts, summary = [], None
+for line in open(sys.argv[1]):
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        continue
+    if "summary" in rec:
+        summary = rec["summary"]
+    elif rec.get("event") == "message_will_retry" and rec.get("run_id") == sys.argv[2]:
+        attempts.append(rec.get("delivery_attempt"))
+print(f"  pipeline summary: {json.dumps(summary)}")
+print(f"  delivery attempts seen for the unstorable run: {attempts}")
+PYEOF
+rm -f "$LOG"
 echo
 
 q() { bq query --project_id="$PROJECT_ID" --use_legacy_sql=false --format=csv --quiet "$1" | tail -n +2; }
