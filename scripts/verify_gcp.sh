@@ -67,7 +67,7 @@ echo "  1 unstorable run published (RUN-$TAG)"
 echo
 
 echo "== 2. Listening until the unstorable run is dead-lettered (up to 10 minutes)"
-echo "  Pub/Sub waits 10s, 20s, 40s... between deliveries, then moves the message after 5 attempts."
+echo "  Pub/Sub redelivers with back-off (10s to 300s) and moves the message after 5 attempts."
 LOG="$(mktemp)"
 "$PY" -c "
 import json, logging, structlog

@@ -500,6 +500,21 @@ one test fail at random. Added stable BigQuery insert IDs, 27 tests, `terraform 
 and two scripts to deploy and verify the behaviour on GCP (`scripts/gcp_preflight.sh`,
 `scripts/verify_gcp.sh`).
 
-**Verification status.** These changes are covered by unit tests and the Terraform is validated
-in CI. They have not yet been redeployed to GCP: the screenshots and the live links above come
+**Verified on GCP on 17 November 2026.** The v0.2 Terraform was applied to the live project
+(8 added, 0 changed, 1 destroyed) and `scripts/verify_gcp.sh` passed 6 of 6 checks:
+
+| Check | Result |
+|-------|--------|
+| 5 simulator runs written to `sequencing_runs` | 5 |
+| Duplicate run rows | 0 |
+| Bad `run_id` stored in `rejected_records` (`VALIDATION`) | 1 |
+| Non-JSON payload stored in `rejected_records` (`UNPARSEABLE`) | 1 |
+| Unstorable run kept out of `sequencing_runs` | 0 rows |
+| Unstorable run dead-lettered | after delivery attempts 1 to 5, within 45 seconds |
+
+The first attempt passed 5 of 6. The unstorable run was retried 16 times and never dead-lettered,
+because the pipeline was run in bursts with no subscriber listening in between. That led to listen
+mode. Both runs are kept in [`docs/evidence/`](docs/evidence/).
+
+Not yet confirmed: delivery of the alert email. The screenshots and live links above still come
 from the May 2026 deployment.

@@ -1,0 +1,48 @@
+GenomicFlow GCP verification
+project=genomicflow-platform tag=verify20261117124543 start=2026-11-17T12:45:43Z
+
+== 1. Publishing test messages
+  5 simulator runs published
+  1 bad run_id published
+  1 non-JSON payload published
+  1 unstorable run published (RUN-verify20261117124543)
+
+== 2. Running the pipeline until the unstorable run is dead-lettered
+  Pub/Sub backs off 10s, 20s, 40s... between deliveries, so this takes a few minutes.
+  round 1: {"total": 8, "processed": 5, "rejected": 2, "retry": 1, "dry_run": 0}
+  round 2: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 3: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 4: {"total": 0, "processed": 0, "rejected": 0, "retry": 0, "dry_run": 0}
+  round 5: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 6: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 7: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 8: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 9: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 10: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 11: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 12: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 13: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 14: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 15: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+  round 16: {"total": 1, "processed": 0, "rejected": 0, "retry": 1, "dry_run": 0}
+
+== 3. Where each message ended up
+  PASS  simulator runs written to sequencing_runs (got 5)
+  PASS  duplicate run rows (got 0)
+  PASS  bad run_id stored in rejected_records (got 1)
+  PASS  non-JSON payload stored in rejected_records (got 1)
+  PASS  unstorable run kept out of sequencing_runs (got 0)
+  FAIL  unstorable run reached the dead-letter subscription (expected yes, got no)
+
+== 4. Rejected records from this run
++----------------+--------------------------+--------------------------------------------------------------------------------------------------------+------------------+
+| rejection_type |          run_id          |                                            rejection_reason                                            | delivery_attempt |
++----------------+--------------------------+--------------------------------------------------------------------------------------------------------+------------------+
+| VALIDATION     | BAD-verify20261117124543 | run_id 'BAD-verify20261117124543' does not match RUN- format; organism is missing; platform is missing |                1 |
+| UNPARSEABLE    | NULL                     | payload is not a valid JSON object: Expecting value: line 1 column 1 (char 0)                          |                1 |
++----------------+--------------------------+--------------------------------------------------------------------------------------------------------+------------------+
+
+Saved to docs/evidence/gcp-verify-2026-11-17.txt
+If alert_email was set, the dead-letter alert should email you within about 5 minutes.
+To clear the dead-lettered test message afterwards:
+  gcloud pubsub subscriptions pull genomic-events-dead-letter-sub --project genomicflow-platform --limit=10 --auto-ack
