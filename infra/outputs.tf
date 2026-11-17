@@ -25,3 +25,15 @@ output "pipeline_service_account" {
 output "api_service_account" {
   value = google_service_account.api.email
 }
+
+output "dead_letter_topic" {
+  value = google_pubsub_topic.dead_letter.name
+}
+
+output "dead_letter_subscription" {
+  value = google_pubsub_subscription.dead_letter_sub.name
+}
+
+output "rejected_records_table" {
+  value = "${google_bigquery_table.rejected_records.dataset_id}.${google_bigquery_table.rejected_records.table_id}"
+}

@@ -54,7 +54,7 @@ warehouse, and exposes it through a self-documenting REST API and live dashboard
                                v
 +---------------------------------------------------------------------+
 |                  Google Cloud Pub/Sub                                |
-|     Topic: genomic-events  ·  Dead-letter: genomic-events-dead      |
+|     Topic: genomic-events  ·  Dead-letter after 5 attempts          |
 |     Message retention: 24h  ·  Retry with exponential back-off      |
 +------------------------------+--------------------------------------+
                                | streaming pull
@@ -66,13 +66,15 @@ warehouse, and exposes it through a self-documenting REST API and live dashboard
 |   9 validation rules across 4 categories                            |
 |        |                          |                                  |
 |        v                          v                                  |
-|   PASSED records             FAILED / QUARANTINED                    |
-|        |                     logged with rejection reason            |
-|        v                                                             |
-|   BigQuery Writer                                                    |
+|   ACCEPTED records           REJECTED records                        |
+|        |                     stored with reason + payload            |
+|        v                          v                                  |
+|   BigQuery Writer            rejected_records (then acked)           |
 |   +-- sequencing_runs  (partitioned by day, clustered)              |
 |   +-- variants         (genomic variant calls per run)              |
 |   +-- quality_metrics  (7 QC metrics per run)                       |
+|                                                                      |
+|   Write failed -> nack -> redelivered -> dead-letter topic           |
 +------------------------------+--------------------------------------+
                                |
               +----------------+----------------+
@@ -102,14 +104,14 @@ Infrastructure: Terraform  ·  CI/CD: GitHub Actions  ·  Containers: Docker
 | **CI/CD** | GitHub Actions (lint + test + Docker build) |
 | **Visualisation** | Looker Studio (live BigQuery connection) |
 | **IAM** | GCP Service Accounts with least-privilege roles |
-| **Testing** | pytest · 24 passing tests · 95%+ coverage on core modules |
+| **Testing** | pytest · 49 passing tests · Terraform validated in CI |
 | **Logging** | structlog (structured JSON logs with correlation IDs) |
 
 ---
 
 ## Data Model
 
-Three BigQuery tables with day partitioning and clustering for query efficiency:
+Three BigQuery tables hold accepted data and a fourth holds rejected records. All are partitioned by day:
 
 ### `sequencing_runs` - Primary fact table
 
@@ -141,6 +143,13 @@ quality score, clinical significance (PATHOGENIC through BENIGN).
 Partitioned by `measured_at`. Tracks: mean_base_quality, coverage_depth, Q30_percentage, duplicate_rate,
 mapping_rate, GC_content, insert_size_median — each with threshold and pass/fail flag.
 
+### `rejected_records` - every message the pipeline refused
+
+Partitioned by `received_at`, clustered by `rejection_type`. One row per rejected message:
+`message_id`, `run_id` (if present), `rejection_type` (`VALIDATION` or `UNPARSEABLE`),
+`rejection_reason` (every rule that failed), the original `payload` as received, and the
+Pub/Sub `delivery_attempt`. Rejected data can be counted, inspected and replayed with SQL.
+
 ---
 
 ## Data Quality Engine
@@ -149,20 +158,39 @@ mapping_rate, GC_content, insert_size_median — each with threshold and pass/fa
 
 | Category | Rule | Action on failure |
 |----------|------|-------------------|
-| Identity | run_id non-null | Quarantine |
-| Identity | run_id matches RUN- format | Quarantine |
-| Identity | sample_id non-null | Quarantine |
-| Status | Valid PASSED/FAILED/QUARANTINED value | Quarantine |
+| Identity | run_id non-null | Reject |
+| Identity | run_id matches RUN- format | Reject |
+| Identity | sample_id non-null | Reject |
+| Status | Valid PASSED/FAILED/QUARANTINED value | Reject |
 | Metric | mean_quality non-negative | Warning log |
 | Metric | coverage_depth non-negative | Warning log |
 | Completeness | organism present | Warning log |
 | Completeness | platform present | Warning log |
 | Completeness | total_bases positive | Warning log |
 
-**Blocking rules** (identity + status) quarantine the record and prevent BigQuery insertion.
-**Warning rules** log the issue but allow the record through — nothing is silently dropped.
+**Blocking rules** (identity + status) keep the record out of the warehouse. It is written to
+`rejected_records` with every failed rule and the original payload, and only then acknowledged.
+A payload that is not a JSON object is stored the same way as `UNPARSEABLE`.
+**Warning rules** let the record through and are logged with it.
 
-From 50 runs ingested: **45 passed (90%) · 3 failed (6%) · 2 quarantined (4%)**
+### What happens to each message
+
+| Outcome | When | Stored in | Pub/Sub |
+|---------|------|-----------|---------|
+| Processed | Valid, and all three writes succeed | `sequencing_runs`, `variants`, `quality_metrics` | ack |
+| Rejected | A blocking rule fails, or the payload is not a JSON object | `rejected_records` | ack |
+| Retried | Any BigQuery write fails, including the rejection write | nothing yet | nack, redelivered with back-off (10s to 300s) |
+| Dead-lettered | Still failing after 5 deliveries | `genomic-events-dead-letter-sub` (kept 7 days) | moved by Pub/Sub |
+
+A message is acknowledged only after its outcome is stored, so a failed write cannot lose data.
+Each write sends BigQuery insert IDs built from stable keys (`run_id`, `variant_id`, `metric_id`,
+`message_id`), so a redelivered message does not normally duplicate rows. BigQuery de-duplicates
+insert IDs on a best-effort basis over a short window, so this narrows duplicates rather than
+ruling them out.
+
+From 50 runs ingested in the May 2026 deployment: **45 passed (90%) · 3 failed (6%) · 2 quarantined (4%)**.
+Here "failed" and "quarantined" are run statuses reported by the instrument simulator, not pipeline
+rejections.
 
 ---
 
@@ -199,14 +227,14 @@ Interactive documentation at `/docs` (Swagger UI) and `/redoc`.
 
 ```
 genomicflow-platform/
-+-- infra/                        # Terraform - all GCP resources
++-- infra/                        # Terraform - storage, Pub/Sub, BigQuery, IAM, alerts
 |   +-- main.tf                   # Provider configuration
 |   +-- variables.tf              # Input variables
 |   +-- storage.tf                # GCS buckets (raw, processed, dataflow)
-|   +-- pubsub.tf                 # Pub/Sub topic, subscription, dead-letter
-|   +-- bigquery.tf               # Dataset + 3 tables with schemas
+|   +-- pubsub.tf                 # Topic, subscription, dead-letter policy + IAM
+|   +-- bigquery.tf               # Dataset + 4 tables (incl. rejected_records)
 |   +-- iam.tf                    # Service accounts + least-privilege roles
-|   +-- monitoring.tf             # Alert policies
+|   +-- monitoring.tf             # Backlog + dead-letter alerts, email channel
 |   +-- outputs.tf                # Resource names and endpoints
 |
 +-- simulator/                    # Clinical lab instrument simulator
@@ -217,15 +245,17 @@ genomicflow-platform/
 |   |   +-- publisher.py          # Pub/Sub publisher
 |   |   +-- runner.py             # Simulator orchestrator
 |   +-- tests/
-|       +-- test_generator.py     # 10 unit tests
+|       +-- test_generator.py     # 11 unit tests
 |
 +-- pipeline/                     # Streaming pipeline
 |   +-- src/
 |   |   +-- validator.py          # 9-rule validation engine
-|   |   +-- bq_writer.py          # BigQuery writer (3 tables)
-|   |   +-- pipeline.py           # Pub/Sub consumer + orchestrator
+|   |   +-- bq_writer.py          # BigQuery writer, stable insert IDs
+|   |   +-- pipeline.py           # Pub/Sub consumer: process, reject or retry
 |   +-- tests/
 |       +-- test_validator.py     # 14 unit tests
+|       +-- test_pipeline.py      # 18 unit tests: outcome and ack/nack per message
+|       +-- test_bq_writer.py     # 6 unit tests: insert IDs and write results
 |
 +-- api/                          # FastAPI Cloud Run service
 |   +-- main.py                   # App factory + middleware
@@ -239,12 +269,12 @@ genomicflow-platform/
 |       +-- quality.py            # /quality/report and /quality/variants/significance
 |
 +-- docs/
-|   +-- architecture.md           # Architecture Decision Records (6 ADRs)
+|   +-- architecture.md           # Architecture Decision Records (7 ADRs)
 |   +-- screenshots/              # GCP console evidence (18 screenshots)
 |
 +-- .github/
 |   +-- workflows/
-|       +-- ci.yml                # GitHub Actions: lint + test + Docker build
+|       +-- ci.yml                # GitHub Actions: lint, test, Terraform validate, Docker build
 |
 +-- Dockerfile                    # Multi-stage, non-root user
 +-- .env.example                  # Environment variable template
@@ -331,16 +361,24 @@ terraform plan
 terraform apply
 ```
 
-**Resources created:**
+**Resources created by Terraform:**
 
 - 3 GCS buckets (raw, processed, dataflow staging)
-- Pub/Sub topic + subscription + dead-letter topic
-- BigQuery dataset with 3 partitioned and clustered tables
+- Pub/Sub topic and subscription with a dead-letter policy (5 delivery attempts), a dead-letter
+  topic, and a dead-letter subscription that keeps failed messages for 7 days
+- IAM grants that let the Pub/Sub service agent forward messages to the dead-letter topic
+  (without them the dead-letter policy does nothing)
+- BigQuery dataset with 4 day-partitioned tables (`sequencing_runs` is also clustered)
 - 2 service accounts with least-privilege IAM roles
-- Cloud Monitoring alert policy for high failure rates
-- Artifact Registry repository for Docker images
+- 2 Cloud Monitoring alerts: unprocessed backlog on the main subscription, and any message
+  reaching the dead-letter subscription. Set `alert_email` to have them emailed:
 
-Full infrastructure recreatable in under 5 minutes.
+```bash
+terraform apply -var="alert_email=you@example.com"
+```
+
+**Not in Terraform yet:** the Artifact Registry repository and the Cloud Run service used in the
+May 2026 deployment were created outside this configuration.
 
 ---
 
@@ -360,8 +398,14 @@ pytest simulator/tests/ pipeline/tests/ \
 |--------|----------|
 | simulator/src/generator.py | 100% |
 | simulator/src/models.py | 100% |
-| pipeline/src/validator.py | 95% |
-| **Total** | **24 passing tests** |
+| pipeline/src/bq_writer.py | 100% |
+| pipeline/src/validator.py | 88% |
+| pipeline/src/pipeline.py | 61% (message handling fully covered; the pull loop needs Pub/Sub) |
+| **Total** | **49 passing tests** |
+
+The pipeline tests check that every message ends processed, rejected or retried, that only a
+stored outcome is acknowledged, and that insert IDs stay the same when a message is redelivered.
+CI also runs `terraform fmt -check` and `terraform validate` on `infra/`.
 
 ---
 
@@ -377,6 +421,7 @@ Key decisions documented in [`docs/architecture.md`](docs/architecture.md):
 | ADR-004 | Cloud Run over GKE | Serverless, scales to zero, no cluster management overhead |
 | ADR-005 | Terraform for all infrastructure | Reproducibility, version control, instant teardown |
 | ADR-006 | AWS portability mapping | Architecture patterns identical, only infrastructure config changes |
+| ADR-007 | Acknowledge only after the outcome is stored | A failed write is retried and then dead-lettered instead of lost |
 
 ---
 
@@ -395,3 +440,25 @@ only the infrastructure configuration (Terraform) changes between providers.
 | Cloud Monitoring | Amazon CloudWatch |
 | Looker Studio | Amazon QuickSight |
 | Cloud Build | AWS CodeBuild |
+
+---
+
+## Changelog
+
+### v0.2 - November 2026: making failures visible
+
+A review of the code against this README found that four things it claimed were not true:
+
+| Claim | What the code did | Fix |
+|-------|-------------------|-----|
+| Failed messages go to a dead-letter topic | The topic existed but was not attached to the subscription | `dead_letter_policy` (5 attempts), a subscription to keep dead-lettered messages, and the IAM grants Pub/Sub needs to use it |
+| Quarantined records are kept | Rejected records were only written to the log | `rejected_records` table with reason and original payload; unparseable payloads stored too |
+| Nothing is silently dropped | A message was acknowledged even when its BigQuery write failed, so that data was lost | Acknowledge only after the outcome is stored; otherwise nack and let Pub/Sub retry |
+| An alert on high failure rate | The alert measured undelivered backlog and had no notification channel | Two accurately named alerts (backlog, dead-lettered) and an optional email channel |
+
+Also fixed: `generate_run(force_quarantine=True)` returned a FAILED run 5% of the time, which made
+one test fail at random. Added stable BigQuery insert IDs, 25 tests, and `terraform validate` in CI.
+
+**Verification status.** These changes are covered by unit tests and the Terraform is validated
+in CI. They have not yet been redeployed to GCP: the screenshots and the live links above come
+from the May 2026 deployment.

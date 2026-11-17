@@ -108,3 +108,13 @@
 
 \- Looker Studio → Amazon QuickSight
 
+
+---
+
+## ADR-007: Acknowledge a message only after its outcome is stored
+
+**Decision:** The pipeline acknowledges a Pub/Sub message only once it has been written to the warehouse tables, or written to `rejected_records`. If any write fails, the message is nacked. Pub/Sub redelivers it with back-off and, after 5 attempts, moves it to the dead-letter topic, where a subscription keeps it for 7 days.
+
+**Rationale:** The first version acknowledged every message after trying to write it, so a failed BigQuery write lost the data with only a log line to show for it. Tying the acknowledgement to a stored outcome means every message ends up in exactly one place: a warehouse table, `rejected_records`, or the dead-letter subscription.
+
+**Trade-off:** A message can be delivered more than once, so a write may be repeated. Each row carries a BigQuery insert ID built from stable keys, which de-duplicates retries on a best-effort basis over a short window.

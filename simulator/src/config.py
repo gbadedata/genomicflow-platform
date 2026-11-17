@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     bq_table_runs: str = "sequencing_runs"
     bq_table_variants: str = "variants"
     bq_table_quality: str = "quality_metrics"
+    bq_table_rejected: str = "rejected_records"
 
     # GCS
     gcs_raw_bucket: str = "genomicflow-raw"
@@ -59,6 +60,10 @@ class Settings(BaseSettings):
     @property
     def bq_quality_table(self) -> str:
         return f"{self.gcp_project_id}.{self.bq_dataset}.{self.bq_table_quality}"
+
+    @property
+    def bq_rejected_table(self) -> str:
+        return f"{self.gcp_project_id}.{self.bq_dataset}.{self.bq_table_rejected}"
 
 
 settings = Settings()
