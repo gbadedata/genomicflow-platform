@@ -42,6 +42,11 @@ class TestGenerateRun:
         assert run.status == RunStatus.QUARANTINED
         assert run.failure_reason is not None
 
+    def test_force_quarantine_is_never_overridden_by_chance(self):
+        # Regression: a 5% random FAILED draw used to win over force_quarantine.
+        statuses = {generate_run(force_quarantine=True).status for _ in range(300)}
+        assert statuses == {RunStatus.QUARANTINED}
+
     def test_specific_platform(self):
         run = generate_run(platform=SequencingPlatform.OXFORD_NANOPORE)
         assert run.platform == SequencingPlatform.OXFORD_NANOPORE

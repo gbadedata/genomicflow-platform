@@ -124,7 +124,9 @@ def generate_run(
     coverage_depth = round(random.uniform(*config["coverage_range"]), 2)
 
     rand = random.random()
-    if force_fail or rand < 0.05:
+    # Forced outcomes win over the random draw, so force_quarantine is never
+    # overridden by the 5% chance of a FAILED run.
+    if force_fail or (not force_quarantine and rand < 0.05):
         status = RunStatus.FAILED
         failure_reason = random.choice([
             "Mean base quality below threshold (Q30 < 80%)",

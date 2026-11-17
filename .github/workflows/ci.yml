@@ -54,6 +54,27 @@ jobs:
             --cov-fail-under=25 \
             -v
 
+  terraform:
+    runs-on: ubuntu-latest
+    name: Terraform Validate
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Check formatting
+        run: terraform -chdir=infra fmt -check -recursive
+
+      - name: Validate configuration
+        run: |
+          terraform -chdir=infra init -backend=false -input=false
+          terraform -chdir=infra validate
+
   docker-build:
     runs-on: ubuntu-latest
     name: Docker Build
