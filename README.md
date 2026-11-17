@@ -478,6 +478,7 @@ A review of the code against this README found that four things it claimed were 
 | Quarantined records are kept | Rejected records were only written to the log | `rejected_records` table with reason and original payload; unparseable payloads stored too |
 | Nothing is silently dropped | A message was acknowledged even when its BigQuery write failed, so that data was lost | Acknowledge only after the outcome is stored; otherwise nack and let Pub/Sub retry |
 | An alert on high failure rate | The alert measured undelivered backlog and had no notification channel | Two accurately named alerts (backlog, dead-lettered) and an optional email channel |
+| (not claimed, found while redeploying) | The main subscription expired after 7 days without activity, so by November it had been deleted and any message published would have been lost | The subscription never expires |
 
 Also fixed: `generate_run(force_quarantine=True)` returned a FAILED run 5% of the time, which made
 one test fail at random. Added stable BigQuery insert IDs, 27 tests, `terraform validate` in CI,
