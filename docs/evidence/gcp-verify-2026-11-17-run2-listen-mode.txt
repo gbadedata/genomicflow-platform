@@ -1,0 +1,40 @@
+GenomicFlow GCP verification
+project=genomicflow-platform tag=verify20261117141126 start=2026-11-17T14:11:26Z
+
+== 0. Clearing messages left on genomic-events-sub by earlier runs
+  done
+
+== 1. Publishing test messages
+  5 simulator runs published
+  1 bad run_id published
+  1 non-JSON payload published
+  1 unstorable run published (RUN-verify20261117141126)
+
+== 2. Listening until the unstorable run is dead-lettered (up to 10 minutes)
+  Pub/Sub waits 10s, 20s, 40s... between deliveries, then moves the message after 5 attempts.
+  15s: dead-lettered=no
+  30s: dead-lettered=no
+  45s: dead-lettered=yes
+  pipeline summary: {"total": 12, "processed": 5, "rejected": 2, "retry": 5, "dry_run": 0}
+  delivery attempts seen for the unstorable run: [1, 2, 3, 4, 5]
+
+== 3. Where each message ended up
+  PASS  simulator runs written to sequencing_runs (got 5)
+  PASS  duplicate run rows (got 0)
+  PASS  bad run_id stored in rejected_records (got 1)
+  PASS  non-JSON payload stored in rejected_records (got 1)
+  PASS  unstorable run kept out of sequencing_runs (got 0)
+  PASS  unstorable run reached the dead-letter subscription (got yes)
+
+== 4. Rejected records from this run
++----------------+--------------------------+--------------------------------------------------------------------------------------------------------+------------------+
+| rejection_type |          run_id          |                                            rejection_reason                                            | delivery_attempt |
++----------------+--------------------------+--------------------------------------------------------------------------------------------------------+------------------+
+| VALIDATION     | BAD-verify20261117141126 | run_id 'BAD-verify20261117141126' does not match RUN- format; organism is missing; platform is missing |                1 |
+| UNPARSEABLE    | NULL                     | payload is not a valid JSON object: Expecting value: line 1 column 1 (char 0)                          |                1 |
++----------------+--------------------------+--------------------------------------------------------------------------------------------------------+------------------+
+
+Saved to docs/evidence/gcp-verify-2026-11-17.txt
+If alert_email was set, the dead-letter alert should email you within about 5 minutes.
+To clear the dead-lettered test message afterwards:
+  gcloud pubsub subscriptions pull genomic-events-dead-letter-sub --project genomicflow-platform --limit=10 --auto-ack
