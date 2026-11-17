@@ -29,8 +29,11 @@ resource "google_pubsub_subscription" "genomic_events_sub" {
     max_delivery_attempts = var.max_delivery_attempts
   }
 
+  # Never expire. Pub/Sub deletes an idle subscription after its TTL, and the
+  # original 7-day TTL deleted this one: messages published while it was gone
+  # were lost, because a topic only delivers to subscriptions that exist.
   expiration_policy {
-    ttl = "604800s"
+    ttl = ""
   }
 
   labels = {
