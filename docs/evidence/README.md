@@ -11,4 +11,10 @@ Why the first run failed: with nothing listening between rounds, Pub/Sub's deliv
 
 The "Pub/Sub waits 10s, 20s, 40s..." line in run 2 was the script's own expectation. In practice the five attempts came within 45 seconds; the subscription's retry policy allows 10 to 300 seconds between attempts.
 
-Not covered by these runs: whether the dead-letter alert email arrived, and the Cloud Run API.
+## Alert email
+
+The "GenomicFlow messages dead-lettered" alert emailed the data-team address at 14:23 UTC. Run 2 had dead-lettered the test message at about 14:12 UTC, so the email arrived roughly 11 minutes later. Pub/Sub metrics reach Cloud Monitoring with a delay, and the condition also waits 60 seconds.
+
+![Dead-letter alert email](dead-letter-alert-email-2026-11-17.png)
+
+Not covered: the Cloud Run API.

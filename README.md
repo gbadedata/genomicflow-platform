@@ -516,5 +516,6 @@ The first attempt passed 5 of 6. The unstorable run was retried 16 times and nev
 because the pipeline was run in bursts with no subscriber listening in between. That led to listen
 mode. Both runs are kept in [`docs/evidence/`](docs/evidence/).
 
-Not yet confirmed: delivery of the alert email. The screenshots and live links above still come
-from the May 2026 deployment.
+The dead-letter alert then emailed the team address, about 11 minutes after the message was
+dead-lettered ([screenshot](docs/evidence/dead-letter-alert-email-2026-11-17.png)). The other
+screenshots and the live links above still come from the May 2026 deployment.
