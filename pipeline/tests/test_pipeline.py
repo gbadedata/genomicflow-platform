@@ -152,3 +152,57 @@ class TestDryRun:
         for body in (good_record(), good_record(run_id="BAD"), b"{not json"):
             assert handle_message(received(body), writer, dry_run=True) is Outcome.DRY_RUN
         assert writer.calls == []
+
+
+class FakeSubscriber:
+    """Serves one batch of messages, then an empty pull; records acks and nacks."""
+
+    def __init__(self, batch):
+        self.batches = [batch, []]
+        self.acked, self.nacked = [], []
+
+    def pull(self, request, timeout):
+        return SimpleNamespace(received_messages=self.batches.pop(0) if self.batches else [])
+
+    def acknowledge(self, request):
+        self.acked.extend(request["ack_ids"])
+
+    def modify_ack_deadline(self, request):
+        assert request["ack_deadline_seconds"] == 0
+        self.nacked.extend(request["ack_ids"])
+
+
+class TestRunPipelineLoop:
+
+    def _run(self, monkeypatch, batch, writer):
+        import pipeline.src.pipeline as pl
+        sub = FakeSubscriber(batch)
+        monkeypatch.setattr(pl.pubsub_v1, "SubscriberClient", lambda: sub)
+        monkeypatch.setattr(pl, "BigQueryWriter", lambda: writer)
+        return pl.run_pipeline(max_messages=100), sub
+
+    def _msg(self, body, ack_id):
+        m = received(body, message_id=f"m-{ack_id}")
+        m.ack_id = ack_id
+        return m
+
+    def test_acks_stored_outcomes_and_nacks_failures(self, monkeypatch):
+        class PoisonAwareWriter(FakeWriter):
+            def write_run(self, record, completeness):
+                self.calls.append(("run", record["run_id"]))
+                return record.get("total_bases") != "lots"
+
+        batch = [
+            self._msg(good_record(), "a-good"),
+            self._msg(good_record(run_id="BAD-1"), "a-bad"),
+            self._msg(b"not json", "a-junk"),
+            self._msg(good_record(run_id="RUN-POISON", total_bases="lots"), "a-poison"),
+        ]
+        summary, sub = self._run(monkeypatch, batch, PoisonAwareWriter())
+        assert summary == {"total": 4, "processed": 1, "rejected": 2, "retry": 1, "dry_run": 0}
+        assert sorted(sub.acked) == ["a-bad", "a-good", "a-junk"]
+        assert sub.nacked == ["a-poison"]
+
+    def test_stops_when_no_messages(self, monkeypatch):
+        summary, sub = self._run(monkeypatch, [], FakeWriter())
+        assert summary["total"] == 0 and sub.acked == [] and sub.nacked == []

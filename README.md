@@ -104,7 +104,7 @@ Infrastructure: Terraform  ·  CI/CD: GitHub Actions  ·  Containers: Docker
 | **CI/CD** | GitHub Actions (lint + test + Docker build) |
 | **Visualisation** | Looker Studio (live BigQuery connection) |
 | **IAM** | GCP Service Accounts with least-privilege roles |
-| **Testing** | pytest · 49 passing tests · Terraform validated in CI |
+| **Testing** | pytest · 51 passing tests · Terraform validated in CI |
 | **Logging** | structlog (structured JSON logs with correlation IDs) |
 
 ---
@@ -254,7 +254,7 @@ genomicflow-platform/
 |   |   +-- pipeline.py           # Pub/Sub consumer: process, reject or retry
 |   +-- tests/
 |       +-- test_validator.py     # 14 unit tests
-|       +-- test_pipeline.py      # 18 unit tests: outcome and ack/nack per message
+|       +-- test_pipeline.py      # 20 unit tests: outcome, ack and nack per message
 |       +-- test_bq_writer.py     # 6 unit tests: insert IDs and write results
 |
 +-- api/                          # FastAPI Cloud Run service
@@ -275,6 +275,10 @@ genomicflow-platform/
 +-- .github/
 |   +-- workflows/
 |       +-- ci.yml                # GitHub Actions: lint, test, Terraform validate, Docker build
+|
++-- scripts/
+|   +-- gcp_preflight.sh          # Read-only checks before deploying
+|   +-- verify_gcp.sh             # End-to-end check of failure handling on GCP
 |
 +-- Dockerfile                    # Multi-stage, non-root user
 +-- .env.example                  # Environment variable template
@@ -380,6 +384,25 @@ terraform apply -var="alert_email=you@example.com"
 **Not in Terraform yet:** the Artifact Registry repository and the Cloud Run service used in the
 May 2026 deployment were created outside this configuration.
 
+### Deploy and verify
+
+```bash
+export GCP_PROJECT_ID=your-project
+bash scripts/gcp_preflight.sh                  # read-only: tools, sign-in, APIs, what already exists
+cd infra
+terraform init
+terraform plan -var="project_id=$GCP_PROJECT_ID" -var="alert_email=you@example.com" -out=tfplan
+terraform apply tfplan
+cd ..
+bash scripts/verify_gcp.sh                     # end-to-end check, saved to docs/evidence/
+```
+
+`verify_gcp.sh` publishes five simulator runs, a run with a bad `run_id`, a payload that is not
+JSON, and a run BigQuery cannot store (`total_bases = "lots"`). It runs the pipeline in rounds and
+checks that the runs land in `sequencing_runs` without duplicates, that the two bad messages are
+in `rejected_records`, and that the unstorable run is retried and reaches the dead-letter
+subscription instead of being lost.
+
 ---
 
 ## Testing
@@ -400,8 +423,8 @@ pytest simulator/tests/ pipeline/tests/ \
 | simulator/src/models.py | 100% |
 | pipeline/src/bq_writer.py | 100% |
 | pipeline/src/validator.py | 88% |
-| pipeline/src/pipeline.py | 61% (message handling fully covered; the pull loop needs Pub/Sub) |
-| **Total** | **49 passing tests** |
+| pipeline/src/pipeline.py | 91% |
+| **Total** | **51 passing tests** |
 
 The pipeline tests check that every message ends processed, rejected or retried, that only a
 stored outcome is acknowledged, and that insert IDs stay the same when a message is redelivered.
@@ -457,7 +480,9 @@ A review of the code against this README found that four things it claimed were 
 | An alert on high failure rate | The alert measured undelivered backlog and had no notification channel | Two accurately named alerts (backlog, dead-lettered) and an optional email channel |
 
 Also fixed: `generate_run(force_quarantine=True)` returned a FAILED run 5% of the time, which made
-one test fail at random. Added stable BigQuery insert IDs, 25 tests, and `terraform validate` in CI.
+one test fail at random. Added stable BigQuery insert IDs, 27 tests, `terraform validate` in CI,
+and two scripts to deploy and verify the behaviour on GCP (`scripts/gcp_preflight.sh`,
+`scripts/verify_gcp.sh`).
 
 **Verification status.** These changes are covered by unit tests and the Terraform is validated
 in CI. They have not yet been redeployed to GCP: the screenshots and the live links above come
